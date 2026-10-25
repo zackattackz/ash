@@ -519,6 +519,19 @@ defmodule Ash.Resource.Change do
 
   defmacro __before_compile__(_) do
     quote do
+      # A change that only computes values as the record is written needs nothing else:
+      # it does no work when the changeset is built, on either path.
+      if Module.defines?(__MODULE__, {:before_write, 3}, :def) &&
+           !Module.defines?(__MODULE__, {:change, 3}, :def) &&
+           !Module.defines?(__MODULE__, {:batch_change, 3}, :def) &&
+           !Module.defines?(__MODULE__, {:atomic, 3}, :def) do
+        @impl true
+        def change(changeset, _opts, _context), do: changeset
+
+        @impl true
+        def atomic(changeset, _opts, _context), do: {:ok, changeset}
+      end
+
       if !Module.defines?(__MODULE__, {:change, 3}, :def) &&
            !Module.defines?(__MODULE__, {:atomic, 3}, :def) &&
            !Module.defines?(__MODULE__, {:batch_change, 3}, :def) do
@@ -530,6 +543,8 @@ defmodule Ash.Resource.Change do
             def batch_change(changesets, opts, context)
 
             def atomic(changeset, opts, context)
+
+            def before_write(changeset, opts, context)
 
         Perhaps you have a typo or have incorrectly defined one of the above functions?
         """

@@ -7456,20 +7456,21 @@ defmodule Ash.Changeset do
     results =
       changes
       |> Enum.filter(fn
-        %{change: {module, _}} -> module.has_before_write?()
-        _ -> false
-      end)
-      |> Enum.filter(fn %{where: where} ->
-        Enum.all?(where || [], fn {module, opts} ->
-          opts = fill_change_opts(opts, changeset, actor)
+        %{change: {module, _}, where: where} ->
+          module.has_before_write?() and
+            Enum.all?(where || [], fn {module, opts} ->
+              opts = fill_change_opts(opts, changeset, actor)
 
-          Ash.Resource.Validation.validate(
-            module,
-            changeset,
-            opts,
-            struct(Ash.Resource.Validation.Context, context)
-          ) == :ok
-        end)
+              Ash.Resource.Validation.validate(
+                module,
+                changeset,
+                opts,
+                struct(Ash.Resource.Validation.Context, context)
+              ) == :ok
+            end)
+
+        _ ->
+          false
       end)
       |> Enum.map(fn %{change: {module, opts}} ->
         {:ok, opts} = Ash.Resource.Change.init(module, opts)

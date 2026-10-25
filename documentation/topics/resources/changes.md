@@ -276,3 +276,30 @@ defmodule MyApp.Changes.Slugify do
   end
 end
 ```
+
+## Values Computed As The Record Is Written
+
+Some changes need to write values that depend on the write as it is finally made: what the other changes and their hooks did, hooks added to the changeset after it was built, the attributes Ash sets for managed `belongs_to` relationships, the defaults it applies, and context set on the changeset after it was built. A `before_action` hook can't see all of that, since hooks added after it, and Ash's own `belongs_to` setup, run later.
+
+For that, implement `c:Ash.Resource.Change.before_write/3`. Ash calls it just before the data layer, with the changeset as it is written, and only once it has decided to write. It returns values for attributes:
+
+```elixir
+defmodule MyApp.Changes.RecordWhatChanged do
+  use Ash.Resource.Change
+
+  @impl true
+  def before_write(changeset, _opts, context) do
+    {:ok,
+     %{
+       changed_fields: Map.keys(changeset.attributes),
+       changed_by_id: context.actor && context.actor.id
+     }}
+  end
+end
+```
+
+A change may define nothing but `before_write/3`, as above. Every `before_write/3` on an action is given the same changeset, and the attributes they return may not overlap, so the order they are declared in doesn't matter and none sees another's values. The values overwrite any change to those attributes, and are added to the fields an upsert replaces. A change's `where` conditions are evaluated against the changeset as written.
+
+It runs for atomic actions too, at the end of building the atomic changeset, with `changeset.phase == :atomic`. Return expressions there, for example `{:atomic, expr(^atomic_ref(:title))}`; `atomic_ref/1` works on either path. It is not called for a destroy that deletes the record, as nothing is written; a soft destroy is an update, and it is.
+
+Returning values does not make an update write anything: an update with no other changes is still skipped. To write the record anyway, set `changed?: true` in the changeset's context.

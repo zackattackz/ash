@@ -75,6 +75,20 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
       do: {:ok, %{seen_phase: to_string(changeset.phase)}}
   end
 
+  defmodule OnlyBeforeWrite do
+    @moduledoc false
+    # Defines nothing but `before_write/3`.
+    use Ash.Resource.Change
+
+    @impl true
+    def before_write(changeset, _opts, _context) do
+      case Keyword.fetch(changeset.atomics, :title) do
+        {:ok, expression} -> {:ok, %{seen_title: {:atomic, expression}}}
+        :error -> {:ok, %{seen_title: Ash.Changeset.get_attribute(changeset, :title)}}
+      end
+    end
+  end
+
   defmodule AlsoSeenTitle do
     @moduledoc false
     use Ash.Resource.Change
@@ -217,6 +231,18 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
         require_atomic? true
         accept [:title]
         change SeenTitleRef
+      end
+
+      update :only_before_write do
+        require_atomic? false
+        accept [:title]
+        change OnlyBeforeWrite
+      end
+
+      update :only_before_write_atomic do
+        require_atomic? true
+        accept [:title]
+        change OnlyBeforeWrite
       end
 
       update :seen_when_b do
@@ -364,6 +390,26 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
 
       assert %{title: "C", seen_title: "C"} = updated
     end
+  end
+
+  test "a change may define nothing but before_write/3, and works on either path" do
+    post = Ash.create!(Post, %{title: "A"})
+
+    assert %{seen_title: "B"} = Ash.update!(post, %{title: "B"}, action: :only_before_write)
+
+    assert %{seen_title: "C"} =
+             Ash.update!(post, %{title: "C"}, action: :only_before_write_atomic)
+
+    assert %Ash.BulkResult{status: :success, records: [updated]} =
+             Post
+             |> Ash.Query.filter(id == ^post.id)
+             |> Ash.bulk_update(:only_before_write_atomic, %{title: "D"},
+               strategy: :atomic,
+               return_records?: true,
+               return_errors?: true
+             )
+
+    assert %{seen_title: "D"} = updated
   end
 
   test "a change's where: conditions are evaluated against the changeset as written" do
