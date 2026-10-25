@@ -43,6 +43,38 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
     end
   end
 
+  defmodule SeenTitleRef do
+    @moduledoc false
+    # Reads the title being written through `atomic_ref/1`, on either path.
+    use Ash.Resource.Change
+
+    @impl true
+    def change(changeset, _opts, _context), do: changeset
+
+    @impl true
+    def atomic(changeset, _opts, _context), do: {:ok, changeset}
+
+    @impl true
+    def before_write(_changeset, _opts, _context) do
+      {:ok, %{seen_title: {:atomic, expr(^atomic_ref(:title))}}}
+    end
+  end
+
+  defmodule SeenPhase do
+    @moduledoc false
+    use Ash.Resource.Change
+
+    @impl true
+    def change(changeset, _opts, _context), do: changeset
+
+    @impl true
+    def atomic(changeset, _opts, _context), do: {:ok, changeset}
+
+    @impl true
+    def before_write(changeset, _opts, _context),
+      do: {:ok, %{seen_phase: to_string(changeset.phase)}}
+  end
+
   defmodule AlsoSeenTitle do
     @moduledoc false
     use Ash.Resource.Change
@@ -114,6 +146,7 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
       attribute :body, :string, public?: true
       attribute :seen_author_id, :uuid, public?: true
       attribute :seen_title, :string, public?: true
+      attribute :seen_phase, :string, public?: true
     end
 
     relationships do
@@ -177,6 +210,19 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
         require_atomic? true
         accept [:title]
         change SeenTitle
+        change SeenPhase
+      end
+
+      update :seen_atomic_ref do
+        require_atomic? true
+        accept [:title]
+        change SeenTitleRef
+      end
+
+      update :seen_when_b do
+        require_atomic? false
+        accept [:title]
+        change SeenTitle, where: [attribute_equals(:title, "B")]
       end
 
       update :two_on_one_attribute do
@@ -286,7 +332,7 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
                Ash.update!(post, %{title: "B"}, action: :seen_atomic)
     end
 
-    test "in a bulk atomic update" do
+    test "in a bulk atomic update, in the atomic phase" do
       post = Ash.create!(Post, %{title: "A"})
 
       assert %Ash.BulkResult{status: :success, records: [updated]} =
@@ -298,8 +344,33 @@ defmodule Ash.Test.Changeset.BeforeWriteTest do
                  return_errors?: true
                )
 
-      assert %{title: "B", seen_title: "B"} = updated
+      assert %{title: "B", seen_title: "B", seen_phase: "atomic"} = updated
     end
+
+    test "atomic_ref/1 resolves to the value being written, on either path" do
+      post = Ash.create!(Post, %{title: "A"})
+
+      assert %{title: "B", seen_title: "B"} =
+               Ash.update!(post, %{title: "B"}, action: :seen_atomic_ref)
+
+      assert %Ash.BulkResult{status: :success, records: [updated]} =
+               Post
+               |> Ash.Query.filter(id == ^post.id)
+               |> Ash.bulk_update(:seen_atomic_ref, %{title: "C"},
+                 strategy: :atomic,
+                 return_records?: true,
+                 return_errors?: true
+               )
+
+      assert %{title: "C", seen_title: "C"} = updated
+    end
+  end
+
+  test "a change's where: conditions are evaluated against the changeset as written" do
+    post = Ash.create!(Post, %{title: "A"})
+
+    assert %{seen_title: "B"} = Ash.update!(post, %{title: "B"}, action: :seen_when_b)
+    assert %{seen_title: "B"} = Ash.update!(post, %{title: "C"}, action: :seen_when_b)
   end
 
   test "callbacks don't see each other's values, and all apply", %{a: a, b: b} do

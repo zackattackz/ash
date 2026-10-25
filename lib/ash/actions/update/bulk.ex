@@ -2906,6 +2906,8 @@ defmodule Ash.Actions.Update.Bulk do
                     [] -> %{}
                   end
 
+                batch = Enum.map(batch, &Ash.Changeset.run_before_write/1)
+
                 if Code.ensure_loaded?(mod) and function_exported?(mod, :bulk_update, 3) do
                   Ash.Resource.ManualUpdate.bulk_update(
                     mod,

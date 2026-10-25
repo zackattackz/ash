@@ -897,8 +897,7 @@ defmodule Ash.Changeset do
                    not (Enum.empty?(changeset.atomics) and Enum.empty?(changeset.attributes))
              }),
            %Ash.Changeset{} = changeset <- atomic_defaults(changeset, opts),
-           # Callbacks see the atomic phase; `atomic_changes/2` clears it on its way out.
-           %Ash.Changeset{} = changeset <- run_before_write(set_phase(changeset, :atomic)),
+           %Ash.Changeset{} = changeset <- run_before_write(changeset),
            %Ash.Changeset{} = changeset <-
              hydrate_atomic_refs(
                changeset,
@@ -1209,7 +1208,9 @@ defmodule Ash.Changeset do
     end)
     |> case do
       {:not_atomic, reason} -> {:not_atomic, reason}
-      %__MODULE__{} = changeset -> clear_phase(changeset)
+      # `fully_atomic_changeset/4` set the phase and clears it when it is done; the steps
+      # after this one (defaults, `before_write/3`) run in the atomic phase too.
+      %__MODULE__{} = changeset -> changeset
     end
   end
 
@@ -7520,7 +7521,10 @@ defmodule Ash.Changeset do
         values
         |> Enum.reduce(changeset, fn
           {name, {:atomic, expression}}, changeset ->
-            atomic_update(changeset, name, {:atomic, expression})
+            case hydrate_before_write_expression(changeset, expression) do
+              {:ok, expression} -> atomic_update(changeset, name, {:atomic, expression})
+              {:error, error} -> add_error(changeset, error)
+            end
 
           {name, value}, %{phase: :atomic} = changeset ->
             atomic_update(changeset, name, {:atomic, value})
@@ -7544,6 +7548,18 @@ defmodule Ash.Changeset do
       errors ->
         Enum.reduce(errors, changeset, &add_error(&2, &1))
     end
+  end
+
+  # On the non-atomic path the atomics were hydrated before the callbacks ran, so an
+  # expression a callback returns is hydrated here, `atomic_ref/1` included.
+  defp hydrate_before_write_expression(changeset, expression) do
+    expression
+    |> Ash.Expr.walk_template(fn
+      {:_atomic_ref, field} -> atomic_ref(changeset, field)
+      other -> other
+    end)
+    |> fill_change_opts(changeset, changeset.context[:private][:actor])
+    |> Ash.Filter.hydrate_refs(%{resource: changeset.resource, public?: false})
   end
 
   defp fill_change_opts(opts, changeset, actor) do

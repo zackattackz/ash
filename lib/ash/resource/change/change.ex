@@ -449,6 +449,9 @@ defmodule Ash.Resource.Change do
 
   Returning values does not make an update write anything. To write a record even when
   nothing else changed, set `changed?: true` in the changeset's context.
+
+  It is not called for a destroy that deletes the record, as nothing is written. A soft
+  destroy is an update, and it is.
   """
   @callback before_write(
               changeset :: Ash.Changeset.t(),
