@@ -433,6 +433,33 @@ defmodule Ash.Resource.Change do
               | :ok
               | {:error, term()}
 
+  @doc """
+  Values to write, computed from the changeset as it is written.
+
+  Ash calls this just before the data layer: after every hook has run, after the attributes
+  of managed `belongs_to` relationships have been set and defaults applied, and only once it
+  has decided to write the record. Nothing that can change the changeset runs after it.
+
+  It runs on the atomic path too, with the atomic changeset (`changeset.phase == :atomic`),
+  after `atomic/3` and the atomic defaults; return expressions there.
+
+  Every `before_write/3` on the action is given the same changeset, and the attributes they
+  return may not overlap, so their order does not matter and none sees another's values. A
+  value may be `{:atomic, expression}`. The values overwrite any change to those attributes.
+
+  Returning values does not make an update write anything. To write a record even when
+  nothing else changed, set `changed?: true` in the changeset's context.
+  """
+  @callback before_write(
+              changeset :: Ash.Changeset.t(),
+              opts :: Keyword.t(),
+              context :: Context.t()
+            ) ::
+              {:ok, %{optional(atom()) => term() | {:atomic, Ash.Expr.t()}}}
+              | :ok
+              | {:error, term()}
+
+  @callback has_before_write?() :: boolean
   @callback atomic?() :: boolean
 
   @callback has_change?() :: boolean
@@ -462,6 +489,8 @@ defmodule Ash.Resource.Change do
                       batch_change: 3,
                       change: 3,
                       atomic: 3,
+                      before_write: 3,
+                      has_before_write?: 0,
                       temporal_safe?: 1
 
   defmacro __using__(_) do
@@ -606,6 +635,14 @@ defmodule Ash.Resource.Change do
       else
         @impl true
         def has_after_batch?, do: false
+      end
+
+      if Module.defines?(__MODULE__, {:before_write, 3}, :def) do
+        @impl true
+        def has_before_write?, do: true
+      else
+        @impl true
+        def has_before_write?, do: false
       end
 
       if Module.defines?(__MODULE__, {:atomic, 3}, :def) do

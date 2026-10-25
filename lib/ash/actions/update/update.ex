@@ -545,6 +545,7 @@ defmodule Ash.Actions.Update do
                     else
                       changeset
                       |> Ash.Changeset.set_defaults(:update, true)
+                      |> Ash.Changeset.run_before_write()
                       |> then(fn cs ->
                         Ash.Resource.ManualUpdate.update(
                           mod,
@@ -588,6 +589,7 @@ defmodule Ash.Actions.Update do
                           else
                             Ash.Changeset.set_defaults(changeset, :update, true)
                           end
+                          |> Ash.Changeset.run_before_write()
 
                         case Ash.Changeset.handle_allow_nil_atomics(changeset, opts[:actor]) do
                           %Ash.Changeset{valid?: true} = changeset ->

@@ -893,9 +893,12 @@ defmodule Ash.Changeset do
            %Ash.Changeset{} = changeset <-
              Ash.Changeset.set_context(changeset, %{
                changed?:
-                 not (Enum.empty?(changeset.atomics) and Enum.empty?(changeset.attributes))
+                 changeset.context[:changed?] == true or
+                   not (Enum.empty?(changeset.atomics) and Enum.empty?(changeset.attributes))
              }),
            %Ash.Changeset{} = changeset <- atomic_defaults(changeset, opts),
+           # Callbacks see the atomic phase; `atomic_changes/2` clears it on its way out.
+           %Ash.Changeset{} = changeset <- run_before_write(set_phase(changeset, :atomic)),
            %Ash.Changeset{} = changeset <-
              hydrate_atomic_refs(
                changeset,
@@ -5338,8 +5341,11 @@ defmodule Ash.Changeset do
         {:error, error}
 
       {changeset, %{notifications: before_action_notifications}} ->
+        # An explicit `changed?: true` in the context asks for the write to happen even
+        # when nothing else changed.
         changed? =
-          Ash.Changeset.changing_attributes?(changeset) or
+          changeset.context[:changed?] == true or
+            Ash.Changeset.changing_attributes?(changeset) or
             not Enum.empty?(changeset.atomics)
 
         changeset =
@@ -7422,6 +7428,133 @@ defmodule Ash.Changeset do
     else
       %{changeset | before_action: changeset.before_action ++ [func]}
     end
+  end
+
+  @doc false
+  # Runs every change's `before_write/3` with this changeset and applies their values.
+  # Called just before the data layer, and at the end of `fully_atomic_changeset/4`.
+  def run_before_write(%{valid?: false} = changeset), do: changeset
+  def run_before_write(%{action: nil} = changeset), do: changeset
+
+  def run_before_write(changeset) do
+    private = changeset.context[:private] || %{}
+    actor = private[:actor]
+
+    context = %{
+      actor: actor,
+      source_context: changeset.context,
+      tenant: changeset.tenant,
+      authorize?: private[:authorize?] || false,
+      tracer: private[:tracer]
+    }
+
+    changes =
+      changeset.action.changes ++
+        Ash.Resource.Info.changes(changeset.resource, changeset.action_type)
+
+    results =
+      changes
+      |> Enum.filter(fn
+        %{change: {module, _}} -> module.has_before_write?()
+        _ -> false
+      end)
+      |> Enum.filter(fn %{where: where} ->
+        Enum.all?(where || [], fn {module, opts} ->
+          opts = fill_change_opts(opts, changeset, actor)
+
+          Ash.Resource.Validation.validate(
+            module,
+            changeset,
+            opts,
+            struct(Ash.Resource.Validation.Context, context)
+          ) == :ok
+        end)
+      end)
+      |> Enum.map(fn %{change: {module, opts}} ->
+        {:ok, opts} = Ash.Resource.Change.init(module, opts)
+        opts = fill_change_opts(opts, changeset, actor)
+
+        {module,
+         module.before_write(changeset, opts, struct(Ash.Resource.Change.Context, context))}
+      end)
+
+    {errors, values} =
+      Enum.reduce(results, {[], []}, fn
+        {_module, :ok}, acc ->
+          acc
+
+        {_module, {:ok, values}}, {errors, acc} when is_map(values) ->
+          {errors, [values | acc]}
+
+        {_module, {:error, error}}, {errors, acc} ->
+          {[error | errors], acc}
+
+        {module, other}, {errors, acc} ->
+          {[
+             "#{inspect(module)}.before_write/3 must return {:ok, map}, :ok or {:error, error}, got: #{inspect(other)}"
+             | errors
+           ], acc}
+      end)
+
+    shared =
+      values
+      |> Enum.flat_map(&Map.keys/1)
+      |> Enum.frequencies()
+      |> Enum.filter(fn {_, n} -> n > 1 end)
+      |> Enum.map(&elem(&1, 0))
+
+    errors =
+      if shared == [] do
+        errors
+      else
+        [
+          "more than one before_write/3 on #{inspect(changeset.resource)}.#{changeset.action.name} returned #{inspect(shared)}"
+          | errors
+        ]
+      end
+
+    case errors do
+      [] ->
+        values = Enum.reduce(values, %{}, &Map.merge(&2, &1))
+
+        values
+        |> Enum.reduce(changeset, fn
+          {name, {:atomic, expression}}, changeset ->
+            atomic_update(changeset, name, {:atomic, expression})
+
+          {name, value}, %{phase: :atomic} = changeset ->
+            atomic_update(changeset, name, {:atomic, value})
+
+          {name, value}, changeset ->
+            force_change_attribute(changeset, name, value)
+        end)
+        |> then(fn changeset ->
+          # Values written just before the write are written on conflict too.
+          case changeset.context[:private] do
+            %{upsert?: true, upsert_fields: upsert_fields} when is_list(upsert_fields) ->
+              set_context(changeset, %{
+                private: %{upsert_fields: Enum.uniq(upsert_fields ++ Map.keys(values))}
+              })
+
+            _ ->
+              changeset
+          end
+        end)
+
+      errors ->
+        Enum.reduce(errors, changeset, &add_error(&2, &1))
+    end
+  end
+
+  defp fill_change_opts(opts, changeset, actor) do
+    Ash.Expr.fill_template(
+      opts,
+      actor: actor,
+      tenant: changeset.to_tenant,
+      args: changeset.arguments,
+      context: changeset.context,
+      changeset: changeset
+    )
   end
 
   @doc """

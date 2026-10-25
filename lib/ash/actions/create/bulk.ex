@@ -1221,6 +1221,8 @@ defmodule Ash.Actions.Create.Bulk do
                 {Ash.Changeset.add_error(changeset, error), []}
 
               {changeset, manage_instructions} ->
+                changeset = Ash.Changeset.run_before_write(changeset)
+
                 {changeset, _} =
                   Ash.Actions.ManagedRelationships.validate_required_belongs_to({changeset, []})
 

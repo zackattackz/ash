@@ -2970,7 +2970,8 @@ defmodule Ash.Actions.Update.Bulk do
                   {:ok, []},
                   fn changeset, {:ok, results} ->
                     changed? =
-                      Ash.Changeset.changing_attributes?(changeset) or
+                      changeset.context[:changed?] == true or
+                        Ash.Changeset.changing_attributes?(changeset) or
                         not Enum.empty?(changeset.atomics)
 
                     if changed? do
@@ -2982,9 +2983,13 @@ defmodule Ash.Actions.Update.Bulk do
                           Ash.Changeset.set_defaults(changeset, :update, true)
                         end
                         |> Ash.Changeset.set_action_select()
+                        |> Ash.Changeset.run_before_write()
 
-                      resource
-                      |> Ash.DataLayer.update(changeset)
+                      if changeset.valid? do
+                        Ash.DataLayer.update(resource, changeset)
+                      else
+                        {:error, Ash.Error.to_error_class(changeset.errors)}
+                      end
                       |> Ash.Actions.Helpers.rollback_if_in_transaction(resource, nil)
                       |> case do
                         {:ok, result} ->
